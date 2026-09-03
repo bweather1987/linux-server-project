@@ -3,13 +3,21 @@ import subprocess
 import logging
 import time
 
+
+check_number = 0
+
+
 logging.basicConfig(
     filename="server_monitor.log",
     level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s"
+    format="%(asctime)s - %(levelname)s - Check #%(check_number)s - %(message)s"
 )
 
 def run_check():
+	global check_number
+	check_number += 1
+	print(f"\n--- Server Check #{check_number}, ---")
+
 
 	total, used, free = shutil.disk_usage("/")
 
