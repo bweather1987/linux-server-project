@@ -10,13 +10,13 @@ check_number = 0
 logging.basicConfig(
     filename="server_monitor.log",
     level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - Check #%(check_number)s - %(message)s"
+    format="%(asctime)s - %(levelname)s - %(message)s"
 )
 
 def run_check():
 	global check_number
 	check_number += 1
-	print(f"\n--- Server Check #{check_number}, ---")
+	print(f"\n--- Server Check #{check_number} ---")
 
 
 	total, used, free = shutil.disk_usage("/")
@@ -31,11 +31,29 @@ def run_check():
 
 
 	if used_percent > 80:
-		print("WARNING: Disk usage is high!")
+		print("🚨 ALERT: Disk usage is high!")
 		logging.warning("Disk usage is high: %.1f%%", used_percent)
 	else:
 		print("Disk usage is normal.")
 		logging.info("Disk usage is normal: %.1f%%", used_percent)
+
+	cpu = subprocess.check_output(["bash", "-c", "top -bn1 | grep 'Cpu(s)'"]).decode()
+
+
+	cpu_idle = float(cpu.split("id,")[0].split(",")[-1])
+	cpu_percent = 100 - cpu_idle
+
+
+	print("\n=== CPU ===")
+	print("CPU Used:", round(cpu_percent, 1), "%")
+
+
+	if cpu_percent > 80:
+		print("🚨 Alert: CPU usage is high!")
+		logging.warning("CPU usage is high: %.1f%%", cpu_percent)
+	else:
+		print("CPU usage is normal.")
+		logging.info("CPU usage is normal: %.1f%%", cpu_percent)
 
 	memory = subprocess.check_output(["free", "-m"]).decode()
 	memory_lines = memory.splitlines()
