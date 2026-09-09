@@ -94,7 +94,7 @@ def run_check():
 		print("Nginx is running normally.")
 		logging.info("Nginx is running normally.")
 	else:
-		print("WARNING: Nginx is not running!")
+		print("🚨 ALERT: Nginx is not running!")
 		logging.warning("Nginx is not running!")
 
 while True:
