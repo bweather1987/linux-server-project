@@ -97,6 +97,14 @@ def run_check():
 		print("🚨 ALERT: Nginx is not running!")
 		logging.warning("Nginx is not running!")
 
+
+	logging.info(
+		"Summary | CPU: %.1f%% | Memory: %.1f%% | Disk: %.1f%% | Nginx: %s",
+		cpu_percent,
+		memory_percent,
+		used_percent,
+		nginx_status
+	)
 while True:
 	run_check()
 	time.sleep(60)
