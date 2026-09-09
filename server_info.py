@@ -7,6 +7,12 @@ import time
 check_number = 0
 
 
+DISK_THRESHOLD = 80
+CPU_THRESHOLD = 80
+MEMORY_THRESHOLD = 80
+CHECK_INTERVAL = 60
+
+
 logging.basicConfig(
     filename="server_monitor.log",
     level=logging.INFO,
@@ -30,7 +36,7 @@ def run_check():
 	print("Disk Used:", round(used_percent, 1), "%")
 
 
-	if used_percent > 80:
+	if used_percent > DISK_THRESHOLD:
 		print("🚨 ALERT: Disk usage is high!")
 		logging.warning("Disk usage is high: %.1f%%", used_percent)
 	else:
@@ -48,7 +54,7 @@ def run_check():
 	print("CPU Used:", round(cpu_percent, 1), "%")
 
 
-	if cpu_percent > 80:
+	if cpu_percent > CPU_THRESHOLD:
 		print("🚨 Alert: CPU usage is high!")
 		logging.warning("CPU usage is high: %.1f%%", cpu_percent)
 	else:
@@ -70,7 +76,7 @@ def run_check():
 	print("Memory Used:", round(memory_percent, 1), "%")
 
 
-	if memory_percent > 80:
+	if memory_percent > MEMORY_THRESHOLD:
 		print("WARNING: Memory usage is high!")
 		logging.warning("Memory usage is high: %.1f%%", memory_percent)
 	else:
@@ -107,4 +113,4 @@ def run_check():
 	)
 while True:
 	run_check()
-	time.sleep(60)
+	time.sleep(CHECK_INTERVAL)
