@@ -2,15 +2,18 @@ import shutil
 import subprocess
 import logging
 import time
+import configparser
 
 
 check_number = 0
 
+config = configparser.ConfigParser()
+config.read("/home/brandon/cloud/config.ini")
 
-DISK_THRESHOLD = 80
-CPU_THRESHOLD = 80
-MEMORY_THRESHOLD = 80
-CHECK_INTERVAL = 60
+DISK_THRESHOLD = config.getint("monitoring", "disk_threshold")
+CPU_THRESHOLD = config.getint("monitoring", "cpu_threshold")
+MEMORY_THRESHOLD = config.getint("monitoring", "memory_threshold")
+CHECK_INTERVAL = config.getint("monitoring", "check_interval")
 
 
 logging.basicConfig(
