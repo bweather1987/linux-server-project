@@ -102,7 +102,22 @@ def run_check():
 	else:
 		print("🚨 ALERT: Nginx is not running!")
 		logging.error("SERVICE FAILURE: Nginx is not running!")
+		print("Attempting to restart Nginx...")
+		
 
+		restart_result = subprocess.run(
+			["sudo", "service", "nginx", "start"],
+			capture_output=True,
+			text=True
+		)
+
+		
+		if restart_result.returncode == 0:
+			print("Nginx restart successful.")
+			logging.info("Nginx service recovered successfully.")
+		else:
+			print("🚨 Nginx restart failed!")
+			logging.error("Nginx restart failed: %s", restart_result.stderr.strip())
 
 	logging.info(
 		"Summary | CPU: %.1f%% | Memory: %.1f%% | Disk: %.1f%% | Nginx: %s",
