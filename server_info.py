@@ -43,8 +43,13 @@ def run_check():
 		print("Disk usage is normal.")
 		logging.info("Disk usage is normal: %.1f%%", used_percent)
 
-	cpu = subprocess.check_output(["bash", "-c", "top -bn1 | grep 'Cpu(s)'"]).decode()
-
+	try:
+		cpu = subprocess.check_output(
+			["bash", "-c", "top -bn1 | grep 'Cpu(s)'"]
+		).decode()
+	except subprocess.CalledProcessError as e:
+		logging.error("CPU check failed: %s", e)
+		return
 
 	cpu_idle = float(cpu.split("id,")[0].split(",")[-1])
 	cpu_percent = 100 - cpu_idle
