@@ -143,17 +143,18 @@ def run_check():
 
         try:
                 response = subprocess.run(
-                        ["curl", "-s", "-o", "/dev/null", "-w", "%{http_code}", "--max-time", "5", "http://localhost"],
+                        ["curl", "-s", "-o", "/dev/null", "-w", "%{http_code} %{time_total}", "--max-time", "5", "http://localhost"],
                         capture_output=True,
                         text=True,
                         timeout=10
                 )
 
-                http_status = response.stdout.strip()
+                http_status, response_time = response.stdout.strip().split()
+                response_time_ms = float(response_time) * 1000
 
                 if response.returncode == 0 and http_status == "200":
-                        print("Website is healthy. HTTP 200 OK.")
-                        logging.info("HTTP health check successful: 200 OK")
+                        print(f"Website is healthy. HTTP 200 OK. Response time: {response_time_ms:.2f} ms")
+                        logging.info("HTTP health check successful: 200 OK | Response time: %.2f ms", response_time_ms)
                 else:
                         print("ALERT: Website health check failed!")
                         logging.error("HTTP health check failed: status=%s", http_status)
