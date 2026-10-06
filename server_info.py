@@ -27,6 +27,17 @@ def run_check():
         check_number += 1
         print(f"\n--- Server Check #{check_number} ---")
 
+        # Check server uptime
+        with open("/proc/uptime", "r") as uptime_file:
+                uptime_seconds = int(float(uptime_file.readline().split()[0]))
+
+        days, remainder = divmod(uptime_seconds, 86400)
+        hours, remainder = divmod(remainder, 3600)
+        minutes = remainder // 60
+
+        print(f"Server Uptime: {days}d {hours}h {minutes}m")
+        logging.info("Server uptime: %dd %dh %dm", days, hours, minutes)
+
 
         total, used, free = shutil.disk_usage("/")
 
