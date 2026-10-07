@@ -22,6 +22,12 @@ logging.basicConfig(
     format="%(asctime)s - %(levelname)s - %(message)s"
 )
 
+def send_alert(message):
+        print(f"ALERT: {message}")
+        logging.warning("ALERT: %s", message)
+
+
+
 def run_check():
         global check_number
         check_number += 1
@@ -51,8 +57,7 @@ def run_check():
 
 
         if used_percent > DISK_THRESHOLD:
-                print("🚨 ALERT: Disk usage is high!")
-                logging.warning("Disk usage is high: %.1f%%", used_percent)
+                send_alert(f"Disk usage is high: {used_percent:.1f}%")
         else:
                 print("Disk usage is normal.")
                 logging.info("Disk usage is normal: %.1f%%", used_percent)
@@ -74,8 +79,7 @@ def run_check():
 
 
         if cpu_percent > CPU_THRESHOLD:
-                print("🚨 Alert: CPU usage is high!")
-                logging.warning("CPU usage is high: %.1f%%", cpu_percent)
+                send_alert(f"CPU usage is high: {cpu_percent:.1f}%")
         else:
                 print("CPU usage is normal.")
                 logging.info("CPU usage is normal: %.1f%%", cpu_percent)
@@ -96,8 +100,7 @@ def run_check():
 
 
         if memory_percent > MEMORY_THRESHOLD:
-                print("WARNING: Memory usage is high!")
-                logging.warning("Memory usage is high: %.1f%%", memory_percent)
+                send_alert(f"Memory usage is high: {memory_percent:.1f}%")
         else:
                 print("Memory usage is normal.")
                 logging.info("Memory usage is normal: %.1f%%", memory_percent)
@@ -119,8 +122,7 @@ def run_check():
                 print("Nginx is running normally.")
                 logging.info("Nginx is running normally.")
         else:
-                print("🚨 ALERT: Nginx is not running!")
-                logging.error("SERVICE FAILURE: Nginx is not running!")
+                send_alert("Nginx is not running!")
                 print("Attempting to restart Nginx...")
                 
 
@@ -156,8 +158,7 @@ def run_check():
                         print(f"Website is healthy. HTTP 200 OK. Response time: {response_time_ms:.2f} ms")
                         logging.info("HTTP health check successful: 200 OK | Response time: %.2f ms", response_time_ms)
                 else:
-                        print("ALERT: Website health check failed!")
-                        logging.error("HTTP health check failed: status=%s", http_status)
+                        send_alert(f"Website health check failed! HTTP status: {http_status}")
 
         except subprocess.TimeoutExpired:
                 print("ALERT: Website health check timed out!")
