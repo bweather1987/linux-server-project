@@ -1,17 +1,23 @@
 """Independent Linux health checks with bounded, opt-in service recovery."""
 
+import argparse
 import configparser
+from contextlib import contextmanager
+import fcntl
 from dataclasses import dataclass
 import http.client
 import logging
+from logging.handlers import RotatingFileHandler
 import math
 import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import time
 
-CONFIG_PATH = Path(__file__).resolve().with_name("config.ini")
+PROJECT_DIR = Path(__file__).resolve().parent
+CONFIG_PATH = PROJECT_DIR / "config.ini"
 COMMAND_TIMEOUT = 10
 RECOVERY_TIMEOUT = 30
 CPU_SAMPLE_SECONDS = 0.2
@@ -29,6 +35,8 @@ class Settings:
     recovery_max_attempts: int = 3
     recovery_cooldown: int = 300
     http_timeout: float = 5.0
+    log_max_bytes: int = 5 * 1024 * 1024
+    log_backup_count: int = 5
 
 
 def load_config(path=CONFIG_PATH):
@@ -44,13 +52,15 @@ def load_config(path=CONFIG_PATH):
         recovery_max_attempts=section.getint("recovery_max_attempts", fallback=3),
         recovery_cooldown=section.getint("recovery_cooldown", fallback=300),
         http_timeout=section.getfloat("http_timeout", fallback=5.0),
+        log_max_bytes=config.getint("logging", "max_bytes", fallback=5 * 1024 * 1024),
+        log_backup_count=config.getint("logging", "backup_count", fallback=5),
     )
     for threshold in (settings.disk_threshold, settings.cpu_threshold,
                       settings.memory_threshold):
         if threshold is None or not 0 <= threshold <= 100:
             raise ValueError("Thresholds must be between 0 and 100")
     for value in (settings.check_interval, settings.recovery_max_attempts,
-                  settings.recovery_cooldown):
+                  settings.recovery_cooldown, settings.log_max_bytes, settings.log_backup_count):
         if value is None or value <= 0:
             raise ValueError("Intervals and recovery limits must be positive")
     if not math.isfinite(settings.http_timeout) or settings.http_timeout <= 0:
@@ -241,16 +251,47 @@ def run_check(settings, recovery):
     return results
 
 
-def main():
-    logging.basicConfig(
-        filename="server_monitor.log", level=logging.INFO,
-        format="%(asctime)s - %(levelname)s - %(message)s",
+def parse_args(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--config", type=Path, default=CONFIG_PATH)
+    parser.add_argument("--log-file", type=Path, default=PROJECT_DIR / "server_monitor.log")
+    parser.add_argument("--lock-file", type=Path, default=PROJECT_DIR / "server_monitor.lock")
+    args = parser.parse_args(argv)
+    # Explicit relative arguments are anchored to the script, never the caller's cwd.
+    for name in ("config", "log_file", "lock_file"):
+        value = getattr(args, name)
+        if not value.is_absolute():
+            value = PROJECT_DIR / value
+        setattr(args, name, value.resolve())
+    return args
+
+
+@contextmanager
+def instance_lock(path):
+    """Keep the inode in place: unlinking lock files can permit duplicate owners."""
+    with open(path, "a", encoding="ascii") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise RuntimeError(f"Another monitor holds the lock: {path}") from exc
+        try:
+            yield
+        finally:
+            fcntl.flock(lock, fcntl.LOCK_UN)
+
+
+def configure_logging(path, settings):
+    handler = RotatingFileHandler(
+        path, maxBytes=settings.log_max_bytes,
+        backupCount=settings.log_backup_count, encoding="utf-8",
     )
-    try:
-        settings = load_config()
-    except (OSError, ValueError, KeyError, configparser.Error):
-        logging.exception("Invalid monitoring configuration")
-        return 1
+    handler.setFormatter(logging.Formatter(
+        "%(asctime)s - %(levelname)s - %(message)s"
+    ))
+    logging.basicConfig(level=logging.INFO, handlers=[handler], force=True)
+
+
+def monitor_loop(settings):
     recovery = RecoveryState()
     check_number = 0
     try:
@@ -262,6 +303,25 @@ def main():
     except KeyboardInterrupt:
         logging.info("Monitoring stopped")
         return 0
+
+
+def main(argv=None):
+    args = parse_args(argv)
+    # Startup failures go to stderr/journald even before the file logger exists.
+    try:
+        settings = load_config(args.config)
+    except (OSError, ValueError, KeyError, configparser.Error) as exc:
+        print(f"Invalid monitoring configuration: {exc}", file=sys.stderr)
+        return 1
+    try:
+        with instance_lock(args.lock_file):
+            configure_logging(args.log_file, settings)
+            logging.info("Monitor starting | Config: %s | Log: %s | Recovery: %s",
+                         args.config, args.log_file, settings.auto_recovery)
+            return monitor_loop(settings)
+    except (OSError, RuntimeError) as exc:
+        print(f"Monitor startup/runtime failure: {exc}", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":

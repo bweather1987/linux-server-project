@@ -244,12 +244,10 @@ class MonitorTests(unittest.TestCase):
                     monitor.load_config(path)
 
     def test_shutdown_and_bad_startup(self):
-        with patch.object(monitor.logging, "basicConfig"):
-            with patch.object(monitor, "load_config", side_effect=ValueError("bad config")):
-                self.assertEqual(monitor.main(), 1)
-            with patch.object(monitor, "load_config", return_value=self.settings):
-                with patch.object(monitor, "run_check", side_effect=KeyboardInterrupt):
-                    self.assertEqual(monitor.main(), 0)
+        with patch.object(monitor, "load_config", side_effect=ValueError("bad config")):
+            self.assertEqual(monitor.main([]), 1)
+        with patch.object(monitor, "run_check", side_effect=KeyboardInterrupt):
+            self.assertEqual(monitor.monitor_loop(self.settings), 0)
         self.command.assert_not_called()
 
 

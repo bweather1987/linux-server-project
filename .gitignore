@@ -1,2 +1,4 @@
 server_monitor.log
 __pycache__/
+server_monitor.log.*
+server_monitor.lock
