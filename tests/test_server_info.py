@@ -14,6 +14,8 @@ import server_info as monitor
 class MonitorTests(unittest.TestCase):
     def setUp(self):
         self.command = patch.object(monitor.subprocess, "run").start()
+        self.http = patch.object(monitor.http.client, "HTTPConnection").start()
+        self.http.return_value.getresponse.return_value.status = 200
         self.sleep = patch.object(monitor.time, "sleep").start()
         self.addCleanup(patch.stopall)
         self.settings = monitor.Settings(80, 80, 80, 60, auto_recovery=True)
@@ -38,14 +40,14 @@ class MonitorTests(unittest.TestCase):
         self.assertEqual(kwargs["env"]["LC_ALL"], "C")
 
     def test_each_check_failure_is_isolated(self):
-        names = ("collect_disk", "collect_cpu", "collect_memory", "check_nginx")
+        names = ("collect_disk", "collect_cpu", "collect_memory", "check_nginx", "check_http")
         for failed in names:
             for error in (OSError("missing"), ValueError("bad output"),
                           subprocess.TimeoutExpired("command", 10)):
                 with self.subTest(check=failed, error=type(error).__name__):
                     with contextlib.ExitStack() as stack:
                         mocks = {name: stack.enter_context(patch.object(
-                            monitor, name, return_value="active" if name == "check_nginx" else 10.0
+                            monitor, name, return_value="active" if name == "check_nginx" else "HTTP 200" if name == "check_http" else 10.0
                         )) for name in names}
                         mocks[failed].side_effect = error
                         stack.enter_context(contextlib.redirect_stdout(io.StringIO()))
@@ -170,6 +172,74 @@ class MonitorTests(unittest.TestCase):
                     monitor.load_config(path)
             for extra in ("recovery_max_attempts=0", "recovery_cooldown=-1", "auto_recovery=maybe"):
                 path.write_text(base + extra + "\n")
+                with self.assertRaises(ValueError):
+                    monitor.load_config(path)
+
+    def test_http_success_and_cleanup(self):
+        with self.assertLogs(level="INFO") as logs:
+            self.assertEqual(monitor.check_http(self.settings), "HTTP 200")
+        self.http.assert_called_once_with("127.0.0.1", timeout=5.0)
+        connection = self.http.return_value
+        connection.request.assert_called_once_with("GET", "/", headers={"Connection": "close"})
+        connection.getresponse.return_value.close.assert_called_once()
+        connection.close.assert_called_once()
+        self.assertIn("HTTP 200", logs.output[-1])
+        self.command.assert_not_called()
+
+    def test_http_timeouts_and_connection_failures(self):
+        for stage in ("request", "getresponse"):
+            for error in (TimeoutError("slow"), ConnectionRefusedError("refused"),
+                          ConnectionResetError("reset"), monitor.http.client.BadStatusLine("bad")):
+                with self.subTest(stage=stage, error=type(error).__name__):
+                    self.http.reset_mock()
+                    connection = self.http.return_value
+                    connection.request.side_effect = None
+                    connection.getresponse.side_effect = None
+                    getattr(connection, stage).side_effect = error
+                    with self.assertLogs(level="ERROR") as logs:
+                        result = monitor.check_http(self.settings)
+                    self.assertEqual(result, "timeout" if isinstance(error, TimeoutError) else "request failed")
+                    self.assertIn("HTTP FAILURE:", logs.output[-1])
+                    self.assertNotIn("SERVICE FAILURE:", logs.output[-1])
+                    connection.close.assert_called_once()
+                    self.command.assert_not_called()
+
+    def test_http_unexpected_status_including_redirects(self):
+        for status in (204, 301, 302, 404, 500, 503):
+            with self.subTest(status=status):
+                self.http.return_value.getresponse.return_value.status = status
+                with self.assertLogs(level="ERROR") as logs:
+                    self.assertEqual(monitor.check_http(self.settings), f"HTTP {status}")
+                self.assertIn("HTTP FAILURE:", logs.output[-1])
+        self.command.assert_not_called()
+
+    def test_http_failure_does_not_trigger_service_recovery(self):
+        self.http.return_value.request.side_effect = ConnectionRefusedError("refused")
+        with patch.object(monitor, "collect_disk", return_value=10):
+            with patch.object(monitor, "collect_cpu", return_value=20):
+                with patch.object(monitor, "collect_memory", return_value=30):
+                    with patch.object(monitor, "get_nginx_status", return_value="active"):
+                        with self.assertLogs(level="INFO") as logs:
+                            results = monitor.run_check(self.settings, self.state)
+        self.assertEqual(results, {"disk": 10, "cpu": 20, "memory": 30,
+                                   "nginx": "active", "http": "request failed"})
+        self.assertEqual(self.state.attempts, 0)
+        self.command.assert_not_called()
+        self.assertIn("HTTP: request failed", logs.output[-1])
+
+    def test_http_timeout_configuration(self):
+        base = "[monitoring]\ndisk_threshold=80\ncpu_threshold=80\nmemory_threshold=80\ncheck_interval=60\n"
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "config.ini"
+            path.write_text(base)
+            self.assertEqual(monitor.load_config(path).http_timeout, 5.0)
+            path.write_text(base + "http_timeout=1.25\n")
+            settings = monitor.load_config(path)
+            self.assertEqual(settings.http_timeout, 1.25)
+            monitor.check_http(settings)
+            self.http.assert_called_once_with("127.0.0.1", timeout=1.25)
+            for invalid in ("0", "-1", "nan", "inf", "bad"):
+                path.write_text(base + f"http_timeout={invalid}\n")
                 with self.assertRaises(ValueError):
                     monitor.load_config(path)
 

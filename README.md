@@ -169,3 +169,34 @@ log rotation/retention, external HTTP probes and alert delivery, and deployment
 validation under the intended unprivileged account. Live recovery validation
 requires separate approval. The sequential sampling loop adds collection time to
 the configured sleep interval.
+
+## Local HTTP health check
+
+Each monitoring cycle independently sends `GET /` to `http://127.0.0.1:80`.
+Only HTTP 200 is healthy; redirects and all other status codes are logged as
+`HTTP FAILURE:` events, separately from `SERVICE FAILURE:` events. Connection
+errors, timeouts, and malformed HTTP responses are also logged as HTTP failures.
+The existing cycle summary now includes an `HTTP` field.
+
+Configure the socket timeout in seconds in the existing `[monitoring]` section:
+
+```ini
+http_timeout = 5.0
+```
+
+The timeout must be finite and positive. Older configurations without this key
+use 5 seconds. It bounds blocking socket operations, not the total duration of a
+response whose headers arrive slowly in successive chunks. The check examines
+response headers without downloading the body, closes connections, bypasses
+proxy settings, and does not follow redirects. No additional dependencies are
+required.
+
+HTTP failures never initiate service recovery. The separate systemd check retains
+its existing opt-in, limited recovery behavior; automatic recovery remains off by
+default. A local HTTP 200 establishes that an HTTP listener answered successfully,
+not proof of process identity, response content, or external reachability.
+
+HTTP tests mock network access and cover success, unexpected status codes,
+timeouts, connection/protocol errors, cleanup, configuration validation, check
+isolation, and the absence of HTTP-triggered recovery. Run the complete suite with
+the unittest command above. Live endpoint validation is separate from unit tests.

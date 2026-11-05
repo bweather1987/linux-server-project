@@ -2,6 +2,7 @@
 
 import configparser
 from dataclasses import dataclass
+import http.client
 import logging
 import math
 import os
@@ -27,6 +28,7 @@ class Settings:
     auto_recovery: bool = False
     recovery_max_attempts: int = 3
     recovery_cooldown: int = 300
+    http_timeout: float = 5.0
 
 
 def load_config(path=CONFIG_PATH):
@@ -41,6 +43,7 @@ def load_config(path=CONFIG_PATH):
         auto_recovery=section.getboolean("auto_recovery", fallback=False),
         recovery_max_attempts=section.getint("recovery_max_attempts", fallback=3),
         recovery_cooldown=section.getint("recovery_cooldown", fallback=300),
+        http_timeout=section.getfloat("http_timeout", fallback=5.0),
     )
     for threshold in (settings.disk_threshold, settings.cpu_threshold,
                       settings.memory_threshold):
@@ -50,6 +53,8 @@ def load_config(path=CONFIG_PATH):
                   settings.recovery_cooldown):
         if value is None or value <= 0:
             raise ValueError("Intervals and recovery limits must be positive")
+    if not math.isfinite(settings.http_timeout) or settings.http_timeout <= 0:
+        raise ValueError("http_timeout must be finite and positive")
     return settings
 
 
@@ -171,6 +176,32 @@ def check_nginx(settings, recovery):
     return status
 
 
+def check_http(settings):
+    """Check local HTTP headers only; never redirect, proxy, or recover services."""
+    connection = http.client.HTTPConnection("127.0.0.1", timeout=settings.http_timeout)
+    try:
+        connection.request("GET", "/", headers={"Connection": "close"})
+        response = connection.getresponse()
+        try:
+            status = response.status
+        finally:
+            response.close()
+        if status != 200:
+            logging.error("HTTP FAILURE: http://127.0.0.1 returned HTTP %s", status)
+            return f"HTTP {status}"
+        logging.info("Nginx HTTP health is normal: HTTP 200")
+        return "HTTP 200"
+    except TimeoutError:
+        logging.error("HTTP FAILURE: http://127.0.0.1 timed out (timeout=%ss)",
+                      settings.http_timeout)
+        return "timeout"
+    except (OSError, http.client.HTTPException) as exc:
+        logging.error("HTTP FAILURE: http://127.0.0.1 request failed: %s", exc)
+        return "request failed"
+    finally:
+        connection.close()
+
+
 def safe_check(name, collector):
     try:
         return collector()
@@ -200,10 +231,12 @@ def run_check(settings, recovery):
             else:
                 logging.info("%s usage is normal: %.1f%%", name, value)
     results["nginx"] = safe_check("Nginx", lambda: check_nginx(settings, recovery))
+    results["http"] = safe_check("HTTP", lambda: check_http(settings))
     logging.info(
-        "Summary | CPU: %s | Memory: %s | Disk: %s | Nginx: %s",
+        "Summary | CPU: %s | Memory: %s | Disk: %s | Nginx: %s | HTTP: %s",
         format_percent(results["cpu"]), format_percent(results["memory"]),
         format_percent(results["disk"]), results["nginx"] or "unknown",
+        results["http"] or "unknown",
     )
     return results
 
