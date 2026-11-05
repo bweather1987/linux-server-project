@@ -114,3 +114,58 @@ Planned improvements include:
 ## Goal
 
 This project is part of a hands-on cloud engineering portfolio designed to demonstrate practical Linux administration, automation, monitoring, troubleshooting, and cloud infrastructure skills.
+
+## Reliability revision
+
+Requires Linux, Python 3.10+, `free`, and systemd for Nginx status checks.
+Run with `python3 server_info.py`. Configuration is resolved beside the script;
+`server_monitor.log` remains relative to the working directory, with the existing
+log format and resource thresholds preserved.
+
+Each collector has its own error boundary. Failed checks report `unknown` and do
+not suppress the other checks. CPU utilization is sampled over 0.2 seconds using
+aggregate `/proc/stat` deltas (idle includes I/O wait; guest counters are not
+counted twice). Memory retains the existing `free -m` used/total calculation.
+Subprocesses time out after 10 seconds; service start attempts after 30 seconds.
+
+### Recovery safety
+
+Automatic recovery is **disabled by default**. The existing `config.ini` works
+without changes. Optional settings in its `[monitoring]` section are:
+
+```ini
+auto_recovery = false
+recovery_max_attempts = 3
+recovery_cooldown = 300
+```
+
+Do not enable recovery without operational approval. When enabled, the monitor
+uses `systemctl --no-ask-password start nginx`, never sudo. Existing service
+manager authorization must permit this operation; this project does not change
+permissions. Only confirmed `inactive` or `failed` states trigger recovery.
+Unknown and transitional states do not. Each attempt consumes the budget even
+if the command fails, with at most one start per cooldown period. The budget is
+per monitor process lifetime and is not replenished by successful checks;
+restarting the monitor resets it. Run only one monitor instance. A durable,
+cross-process recovery budget remains a deployment improvement.
+
+After every start attempt, including timeouts and command failures, the monitor
+checks Nginx status up to three times, one second apart. Only a verified `active`
+state is logged as recovery success. Status-query errors report `unknown`.
+Verification establishes systemd service activity, not HTTP application health.
+
+### Automated validation
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -v
+```
+
+Tests mock all subprocess calls and sleeps; they never operate on services.
+Coverage includes independent check failures, command timeouts, invalid counters,
+configuration validation, verified and failed recovery, cooldown, and exhaustion.
+
+Before production deployment, add service supervision and singleton enforcement,
+log rotation/retention, external HTTP probes and alert delivery, and deployment
+validation under the intended unprivileged account. Live recovery validation
+requires separate approval. The sequential sampling loop adds collection time to
+the configured sleep interval.
