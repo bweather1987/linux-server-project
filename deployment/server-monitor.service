@@ -6,7 +6,10 @@ StartLimitBurst=3
 
 [Service]
 Type=simple
-DynamicUser=yes
+DynamicUser=no
+User=server-monitor-check
+Group=server-monitor-check
+RemoveIPC=yes
 WorkingDirectory=/opt/server-monitor
 ExecStart=/usr/bin/python3 -I -B -u /opt/server-monitor/server_info.py --config /etc/server-monitor/config.ini --log-file /var/log/server-monitor/server_monitor.log --lock-file /run/server-monitor/monitor.lock
 Environment=PATH=/usr/bin:/bin

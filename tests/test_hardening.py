@@ -1,5 +1,4 @@
 """Exercise real rotation and advisory locks only in temporary directories."""
-from dataclasses import replace
 import logging
 import os
 from pathlib import Path
@@ -30,6 +29,27 @@ class HardeningTests(unittest.TestCase):
                 self.assertNotIn('entry 00', ''.join(p.read_text() for p in Path(folder).iterdir()))
             finally:
                 handler.close()
+
+    def test_retention_remains_bounded_after_logger_reopen(self):
+        # Simulate process restarts against existing logs, with one retained backup.
+        settings = monitor.Settings(80, 80, 80, 60, log_max_bytes=180, log_backup_count=1)
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / 'monitor.log'
+            for batch in range(3):
+                with patch.object(monitor.logging, 'basicConfig') as setup:
+                    monitor.configure_logging(path, settings)
+                handler = setup.call_args.kwargs['handlers'][0]
+                try:
+                    for index in range(20):
+                        handler.handle(logging.LogRecord(
+                            'test', logging.INFO, '', 0,
+                            f'batch {batch} entry {index:02d} ' + 'x' * 40, (), None))
+                finally:
+                    handler.close()
+                self.assertEqual({item.name for item in Path(folder).iterdir()},
+                                 {'monitor.log', 'monitor.log.1'})
+            self.assertIn('batch 2 entry 19', path.read_text())
+            self.assertNotIn('batch 0', ''.join(item.read_text() for item in Path(folder).iterdir()))
 
     def test_duplicate_lock_rejected_and_released(self):
         with tempfile.TemporaryDirectory() as folder:
