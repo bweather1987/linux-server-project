@@ -16,6 +16,7 @@ class MonitorTests(unittest.TestCase):
         self.command = patch.object(monitor.subprocess, "run").start()
         self.http = patch.object(monitor.http.client, "HTTPConnection").start()
         self.http.return_value.getresponse.return_value.status = 200
+        self.uptime = patch.object(monitor, "collect_uptime", return_value=90061.0).start()
         self.sleep = patch.object(monitor.time, "sleep").start()
         self.addCleanup(patch.stopall)
         self.settings = monitor.Settings(80, 80, 80, 60, auto_recovery=True)
@@ -40,14 +41,17 @@ class MonitorTests(unittest.TestCase):
         self.assertEqual(kwargs["env"]["LC_ALL"], "C")
 
     def test_each_check_failure_is_isolated(self):
-        names = ("collect_disk", "collect_cpu", "collect_memory", "check_nginx", "check_http")
+        values = {"collect_disk": 10.0, "collect_cpu": 10.0, "collect_memory": 10.0,
+                  "check_nginx": "active", "check_http": monitor.HttpResult("HTTP 200", 12.5),
+                  "collect_uptime": 10.0}
+        names = tuple(values)
         for failed in names:
             for error in (OSError("missing"), ValueError("bad output"),
                           subprocess.TimeoutExpired("command", 10)):
                 with self.subTest(check=failed, error=type(error).__name__):
                     with contextlib.ExitStack() as stack:
                         mocks = {name: stack.enter_context(patch.object(
-                            monitor, name, return_value="active" if name == "check_nginx" else "HTTP 200" if name == "check_http" else 10.0
+                            monitor, name, return_value=values[name]
                         )) for name in names}
                         mocks[failed].side_effect = error
                         stack.enter_context(contextlib.redirect_stdout(io.StringIO()))
@@ -55,7 +59,8 @@ class MonitorTests(unittest.TestCase):
                         results = monitor.run_check(self.settings, self.state)
                         for mock in mocks.values():
                             mock.assert_called_once()
-                        self.assertEqual(list(results.values()).count(None), 1)
+                        expected = 2 if failed == "check_http" else 1
+                        self.assertEqual(list(results.values()).count(None), expected)
                         self.assertIn("unknown", logs.output[-1])
 
     def test_cpu_samples_deltas(self):
@@ -177,7 +182,7 @@ class MonitorTests(unittest.TestCase):
 
     def test_http_success_and_cleanup(self):
         with self.assertLogs(level="INFO") as logs:
-            self.assertEqual(monitor.check_http(self.settings), "HTTP 200")
+            self.assertEqual(monitor.check_http(self.settings).status, "HTTP 200")
         self.http.assert_called_once_with("127.0.0.1", timeout=5.0)
         connection = self.http.return_value
         connection.request.assert_called_once_with("GET", "/", headers={"Connection": "close"})
@@ -198,7 +203,7 @@ class MonitorTests(unittest.TestCase):
                     getattr(connection, stage).side_effect = error
                     with self.assertLogs(level="ERROR") as logs:
                         result = monitor.check_http(self.settings)
-                    self.assertEqual(result, "timeout" if isinstance(error, TimeoutError) else "request failed")
+                    self.assertEqual(result.status, "timeout" if isinstance(error, TimeoutError) else "request failed")
                     self.assertIn("HTTP FAILURE:", logs.output[-1])
                     self.assertNotIn("SERVICE FAILURE:", logs.output[-1])
                     connection.close.assert_called_once()
@@ -209,7 +214,7 @@ class MonitorTests(unittest.TestCase):
             with self.subTest(status=status):
                 self.http.return_value.getresponse.return_value.status = status
                 with self.assertLogs(level="ERROR") as logs:
-                    self.assertEqual(monitor.check_http(self.settings), f"HTTP {status}")
+                    self.assertEqual(monitor.check_http(self.settings).status, f"HTTP {status}")
                 self.assertIn("HTTP FAILURE:", logs.output[-1])
         self.command.assert_not_called()
 
@@ -222,7 +227,8 @@ class MonitorTests(unittest.TestCase):
                         with self.assertLogs(level="INFO") as logs:
                             results = monitor.run_check(self.settings, self.state)
         self.assertEqual(results, {"disk": 10, "cpu": 20, "memory": 30,
-                                   "nginx": "active", "http": "request failed"})
+                                   "nginx": "active", "http": "request failed",
+                                   "uptime_seconds": 90061.0, "http_response_ms": None})
         self.assertEqual(self.state.attempts, 0)
         self.command.assert_not_called()
         self.assertIn("HTTP: request failed", logs.output[-1])

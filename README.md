@@ -1,8 +1,8 @@
 # Linux Server Monitoring
 
-A dependency-free Linux health monitor for CPU, memory, root filesystem usage,
-Nginx systemd activity, and `http://127.0.0.1/`. Automatic recovery is disabled by
-default. This repository prepares deployment artifacts; it does not install them.
+A dependency-free Linux health monitor for uptime, CPU, memory, root filesystem
+usage, Nginx systemd activity, and HTTP health/response timing at
+`http://127.0.0.1/`. Automatic recovery is disabled by default. This repository prepares deployment artifacts; it does not install them.
 
 ## Architecture
 
@@ -11,11 +11,12 @@ systemd (restart budget, sandbox, static unprivileged user)
   └─ Python foreground process
       ├─ config validation → exclusive flock → rotating file logger
       └─ sequential monitoring cycles
+          ├─ uptime: /proc/uptime → seconds and days/hours/minutes
           ├─ disk: shutil.disk_usage("/")
           ├─ CPU: /proc/stat sampled over 0.2 seconds
           ├─ memory: free -m
           ├─ Nginx: systemctl is-active nginx
-          └─ HTTP: direct loopback GET /, exact HTTP 200
+          └─ HTTP: direct loopback GET /, exact HTTP 200 + monotonic header latency
 ```
 
 Each check has an independent error boundary. Failed measurements become
@@ -23,7 +24,8 @@ Each check has an independent error boundary. Failed measurements become
 log messages. HTTP failures never initiate recovery. The configured interval is
 sleep time after each cycle, so collection time adds to the cycle duration.
 CPU calculations exclude duplicate guest counters and treat I/O wait as idle.
-Memory retains the original used/total calculation.
+Memory retains the original used/total calculation. Uptime is a separate collector:
+missing/malformed/non-finite counters produce unknown without skipping peers.
 
 ```text
 server_info.py                       monitoring, configuration, locking, logging
@@ -32,8 +34,55 @@ deployment/server-monitor.service    proposed systemd system unit
 tests/test_server_info.py             collection, HTTP, and recovery tests
 tests/test_hardening.py               rotation, retention, paths, locking, startup
 tests/test_deployment.py              static identity and deployment security contract
+tests/test_integrated_features.py     uptime, HTTP timing, local alerts, integration safety
 server_check.sh                       separate manual diagnostic helper
 ```
+
+## Integrated uptime, HTTP timing, and local alerts
+
+Uptime comes from `/proc/uptime`, retaining fractional seconds in the result and
+formatting days/hours/minutes for console and log output. In WSL2 it describes the
+Linux environment's uptime, not Windows host uptime.
+
+HTTP responses carry a status and `response_time_ms`, measured with
+`time.monotonic()` from immediately before the GET request through receipt of
+response headers. This is request-to-headers latency, NOT full-body transfer time
+or curl's time_total. The body is deliberately not downloaded, limiting work and
+preserving the hardened HTTP behavior. Non-200 responses retain their measured
+latency; failed/timed-out requests have unknown completed-response latency.
+No latency alert threshold or total wall-clock deadline is introduced. Socket
+operations still use the validated configurable timeout.
+
+Each summary preserves CPU, memory, disk, Nginx, and HTTP fields and adds formatted
+uptime and HTTP response milliseconds. The Python run_check result additionally
+exposes `uptime_seconds` and `http_response_ms`; check_http returns an HttpResult
+with status and optional response_time_ms. No measurements are recorded as zero
+merely because collection failed.
+
+`send_alert` centralizes LOCAL console/log messages for resource thresholds,
+service/HTTP failures, check exceptions, and recovery warnings. It preserves
+warning/error severity, exception tracebacks, and SERVICE FAILURE versus HTTP
+FAILURE labels. It sends no email, SMS, webhook, or other external notification.
+Under systemd, console alerts appear in the journal and log alerts in the rotating
+file. Persistent problems may produce an alert each cycle; there is no deduplication,
+escalation, or notification delivery guarantee. HTTP failure never starts Nginx.
+
+### Merge provenance
+
+The integration preserves the four commits on origin/main after 981d1b5:
+
+| Commit | Feature retained |
+|---|---|
+| e308647 | Local HTTP health checks, using the hardened Python HTTP client |
+| 0dcfece | Server uptime, now an independent validated collector |
+| aaffd81 | HTTP response measurement, with explicit header-latency semantics |
+| aa7bf31 | Central console/log alerts, retaining warning/error severity |
+
+The server_info.py conflict is resolved by adapting these features to the hardened
+architecture. Host-specific /home/ubuntu paths, top parsing, early return on CPU
+failure, and interactive sudo recovery are not restored. Configuration, subprocess
+timeouts, lock-before-log startup, rotation, static-account sandbox and opt-in
+bounded recovery remain in place. No running deployment is changed by this merge.
 
 ## Requirements and predictable paths
 
@@ -295,8 +344,10 @@ git diff --check
 systemd-analyze verify deployment/server-monitor.service
 ```
 
-Tests mock monitoring commands, HTTP connections and sampling sleeps. Hardening
-tests exercise real rotation, backup eviction, and advisory locks only in temporary
+Tests mock monitoring commands, HTTP connections and sampling sleeps. Integrated
+tests also verify uptime failures, deterministic HTTP timing, local alert severity,
+summary fields, and repeated inactive-service checks without default recovery.
+Hardening tests exercise real rotation, backup eviction, and advisory locks only in temporary
 directories. Unit verification checks syntax and dependencies without starting or
 installing the service. Neither unit tests nor syntax validation prove the sandbox
 works on a deployment host; that requires approved integration testing.

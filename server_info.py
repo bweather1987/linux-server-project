@@ -85,6 +85,32 @@ def percentage(used, total):
     return result
 
 
+def send_alert(message, *args, level=logging.WARNING, exc_info=False):
+    """Emit one local console/log alert; this sends no external notifications."""
+    text = message % args if args else message
+    print(f"ALERT: {text}")
+    logging.log(level, "ALERT: %s", text, exc_info=exc_info)
+
+
+def collect_uptime():
+    with open("/proc/uptime", encoding="ascii") as source:
+        fields = source.readline().split()
+    if not fields:
+        raise ValueError("Missing uptime counter")
+    seconds = float(fields[0])
+    if not math.isfinite(seconds) or seconds < 0:
+        raise ValueError("Invalid uptime counter")
+    return seconds
+
+
+def format_uptime(seconds):
+    if seconds is None:
+        return "unknown"
+    days, remainder = divmod(int(seconds), 86400)
+    hours, remainder = divmod(remainder, 3600)
+    return f"{days}d {hours}h {remainder // 60}m"
+
+
 def collect_disk():
     total, used, _ = shutil.disk_usage("/")
     return percentage(used, total)
@@ -152,19 +178,19 @@ def check_nginx(settings, recovery):
         logging.info("Nginx is running normally.")
         return status
     if status not in {"inactive", "failed"}:
-        logging.warning("Nginx is in transitional state: %s", status)
+        send_alert("Nginx is in transitional state: %s", status)
         return status
-    logging.error("SERVICE FAILURE: Nginx is %s", status)
+    send_alert("SERVICE FAILURE: Nginx is %s", status, level=logging.ERROR)
     if not settings.auto_recovery:
-        logging.warning("Automatic Nginx recovery is disabled")
+        send_alert("Automatic Nginx recovery is disabled")
         return status
     now = time.monotonic()
     if recovery.attempts >= settings.recovery_max_attempts:
-        logging.warning("Nginx recovery attempt budget exhausted")
+        send_alert("Nginx recovery attempt budget exhausted")
         return status
     if (recovery.last_attempt is not None
             and now - recovery.last_attempt < settings.recovery_cooldown):
-        logging.warning("Nginx recovery cooldown is active")
+        send_alert("Nginx recovery cooldown is active")
         return status
     recovery.attempts += 1
     recovery.last_attempt = now
@@ -173,7 +199,7 @@ def check_nginx(settings, recovery):
         run_command(["systemctl", "--no-ask-password", "start", "nginx"],
                     timeout=RECOVERY_TIMEOUT)
     except (OSError, subprocess.SubprocessError) as exc:
-        logging.error("Nginx recovery command failed: %s", exc)
+        send_alert("Nginx recovery command failed: %s", exc, level=logging.ERROR)
     # A failed/timed-out command may still have started the service.
     for attempt in range(VERIFY_ATTEMPTS):
         status = get_nginx_status()
@@ -182,32 +208,45 @@ def check_nginx(settings, recovery):
             return status
         if attempt < VERIFY_ATTEMPTS - 1:
             time.sleep(VERIFY_DELAY)
-    logging.error("Nginx recovery not confirmed; final status: %s", status)
+    send_alert("Nginx recovery not confirmed; final status: %s", status, level=logging.ERROR)
     return status
 
 
+@dataclass(frozen=True)
+class HttpResult:
+    """HTTP outcome and optional completed request-to-headers latency."""
+
+    status: str
+    response_time_ms: float | None = None
+
+
 def check_http(settings):
-    """Check local HTTP headers only; never redirect, proxy, or recover services."""
+    """Measure request-to-headers latency; never redirect, proxy, or recover."""
     connection = http.client.HTTPConnection("127.0.0.1", timeout=settings.http_timeout)
+    started = time.monotonic()
     try:
         connection.request("GET", "/", headers={"Connection": "close"})
         response = connection.getresponse()
         try:
+            elapsed_ms = (time.monotonic() - started) * 1000
             status = response.status
         finally:
             response.close()
+        print(f"HTTP status: {status} | Response time: {elapsed_ms:.2f} ms")
         if status != 200:
-            logging.error("HTTP FAILURE: http://127.0.0.1 returned HTTP %s", status)
-            return f"HTTP {status}"
-        logging.info("Nginx HTTP health is normal: HTTP 200")
-        return "HTTP 200"
+            send_alert("HTTP FAILURE: http://127.0.0.1 returned HTTP %s | Response time: %.2f ms",
+                       status, elapsed_ms, level=logging.ERROR)
+        else:
+            logging.info("Nginx HTTP health is normal: HTTP 200 | Response time: %.2f ms",
+                         elapsed_ms)
+        return HttpResult(f"HTTP {status}", elapsed_ms)
     except TimeoutError:
-        logging.error("HTTP FAILURE: http://127.0.0.1 timed out (timeout=%ss)",
-                      settings.http_timeout)
-        return "timeout"
+        send_alert("HTTP FAILURE: http://127.0.0.1 timed out (timeout=%ss)",
+                   settings.http_timeout, level=logging.ERROR)
+        return HttpResult("timeout")
     except (OSError, http.client.HTTPException) as exc:
-        logging.error("HTTP FAILURE: http://127.0.0.1 request failed: %s", exc)
-        return "request failed"
+        send_alert("HTTP FAILURE: http://127.0.0.1 request failed: %s", exc, level=logging.ERROR)
+        return HttpResult("request failed")
     finally:
         connection.close()
 
@@ -217,7 +256,7 @@ def safe_check(name, collector):
         return collector()
     except Exception:
         # Isolation boundary: even unexpected collector bugs must not skip peers.
-        logging.exception("%s check failed", name)
+        send_alert("%s check failed", name, level=logging.ERROR, exc_info=True)
         return None
 
 
@@ -226,7 +265,11 @@ def format_percent(value):
 
 
 def run_check(settings, recovery):
-    results = {}
+    uptime = safe_check("Uptime", collect_uptime)
+    results = {"uptime_seconds": uptime}
+    print(f"Server Uptime: {format_uptime(uptime)}")
+    if uptime is not None:
+        logging.info("Server uptime: %s", format_uptime(uptime))
     for name, collector, threshold in (
         ("Disk", collect_disk, settings.disk_threshold),
         ("CPU", collect_cpu, settings.cpu_threshold),
@@ -237,16 +280,21 @@ def run_check(settings, recovery):
         print(f"{name} Used: {format_percent(value)}")
         if value is not None:
             if value > threshold:
-                logging.warning("%s usage is high: %.1f%%", name, value)
+                send_alert("%s usage is high: %.1f%%", name, value)
             else:
                 logging.info("%s usage is normal: %.1f%%", name, value)
     results["nginx"] = safe_check("Nginx", lambda: check_nginx(settings, recovery))
-    results["http"] = safe_check("HTTP", lambda: check_http(settings))
+    http = safe_check("HTTP", lambda: check_http(settings))
+    results["http"] = http.status if http is not None else None
+    results["http_response_ms"] = http.response_time_ms if http is not None else None
     logging.info(
-        "Summary | CPU: %s | Memory: %s | Disk: %s | Nginx: %s | HTTP: %s",
+        "Summary | CPU: %s | Memory: %s | Disk: %s | Nginx: %s | HTTP: %s "
+        "| Uptime: %s | HTTP response: %s",
         format_percent(results["cpu"]), format_percent(results["memory"]),
         format_percent(results["disk"]), results["nginx"] or "unknown",
-        results["http"] or "unknown",
+        results["http"] or "unknown", format_uptime(uptime),
+        ("unknown" if results["http_response_ms"] is None
+         else f"{results['http_response_ms']:.2f} ms"),
     )
     return results
 
