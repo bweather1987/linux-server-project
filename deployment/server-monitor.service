@@ -1,0 +1,46 @@
+[Unit]
+Description=Local server resource and Nginx health monitor
+After=network.target
+StartLimitIntervalSec=300
+StartLimitBurst=3
+
+[Service]
+Type=simple
+DynamicUser=no
+User=server-monitor-check
+Group=server-monitor-check
+RemoveIPC=yes
+WorkingDirectory=/opt/server-monitor
+ExecStart=/usr/bin/python3 -I -B -u /opt/server-monitor/server_info.py --config /etc/server-monitor/config.ini --log-file /var/log/server-monitor/server_monitor.log --lock-file /run/server-monitor/monitor.lock
+Environment=PATH=/usr/bin:/bin
+Environment=LC_ALL=C
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=15
+KillMode=control-group
+RuntimeDirectory=server-monitor
+RuntimeDirectoryMode=0700
+RuntimeDirectoryPreserve=restart
+LogsDirectory=server-monitor
+LogsDirectoryMode=0700
+UMask=0077
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_UNIX AF_INET
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
